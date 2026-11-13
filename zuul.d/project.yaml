@@ -1,0 +1,7 @@
+# This repository's own pipeline. Zuul checks a pull request here against the rest of the configuration and reports
+# any configuration error on it, but runs nothing (noop) and never merges it: a pull request here is merged by the
+# orchestrator, after the other bot's review (README.md).
+- project:
+    check:
+      jobs:
+        - noop
