@@ -1,4 +1,20 @@
-# The base job's pre-run (zuul.d/jobs.yaml). Both roles are Zuul's own (zuul/zuul-jobs).
+# This trusted, level-zero pre-run rejects external jobs before any untrusted pre/run/post/
+# cleanup playbook. Zuul skips descendants' post/cleanup playbooks when this level fails.
+- hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Do not retry jobs rejected by the external-node boundary
+      zuul_return:
+        data:
+          zuul:
+            retry: false
+      when: zuul.pipeline == 'check-external'
+    - name: Require a credential-free execution boundary for external checks
+      ansible.builtin.assert:
+        that: zuul.pipeline != 'check-external'
+        fail_msg: "check-external is blocked until a credential-free node is available (AIDepartment#1345)"
+
+# Both roles are Zuul's own (zuul/zuul-jobs), reached only after the pipeline guard.
 - hosts: all
   roles:
     # The live log of a running job, which zuul-web streams from the node's console daemon.
