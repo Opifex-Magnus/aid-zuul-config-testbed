@@ -31,3 +31,19 @@ define no pipeline and no base job, and Zuul refuses either with a configuration
   layout loads and that AIDepartment's pull requests still run speculatively. Link the run in the pull request.
 - Zuul's `check` on the pull request reports a configuration error, if any, before the merge.
 - After the merge, `curl <zuul-web>/api/tenant/aid/config-errors` is empty if it loaded.
+
+## The build node
+
+`zuul.d/providers.yaml` registers one PR-only k3s pod as `aid-node` (AIDepartment#1345). Its deployment, checked image,
+network policies and quota are AIDepartment's `deploy/zuul/node/`. Zuul's static provider assigns one job at a time;
+`base` bounds a job at 7200 seconds. The shared connection `aid-nodes` is `driver=static` in the deployed `zuul.conf`.
+
+The Kubernetes driver in Zuul 14.3.0 creates namespaces and RBAC for each pod, which needs cluster-wide powers the
+tenant does not have, and has no hook to create the namespace's quota and network policy before starting the pod.
+For now the admin creates a bounded namespace and Kubernetes keeps its one pod alive. Jobs share its PR trust level
+and scratch. Its projected ServiceAccount token gives only `dev` at the farm; no job on this node can write the
+trusted cache. Main's post jobs need a separate node and a post-only secret (#1351), never a credential on `aid-node`.
+
+The node's SSH host key is pinned in the provider. On rotation, generate the new SSH Secrets in AIDepartment, update
+`host-key` here in the same rollout, and restart the pod and executor. Only the public key belongs here. The private
+keys stay in AID's keychain and Kubernetes Secrets.
