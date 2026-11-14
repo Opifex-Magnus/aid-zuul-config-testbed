@@ -6,7 +6,8 @@
     name: base
     parent: null
     description: |
-      Every job's parent. Starts the console stream and puts the change under test, merged onto its branch and
+      Every job's parent. Rejects check-external until credential-free nodes exist. For permitted pipelines, starts
+      the console stream and puts the change under test, merged onto its branch and
       onto the changes ahead of it, into the node's workspace (~/src/<host>/<owner>/<repository>).
     pre-run: playbooks/base/pre.yaml
     roles:
