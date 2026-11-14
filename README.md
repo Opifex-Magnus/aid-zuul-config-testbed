@@ -53,3 +53,12 @@ fake readable farm token and proves that all four malicious hooks run in `check`
 The node's SSH host key is pinned in the provider. On rotation, generate the new SSH Secrets in AIDepartment, update
 `host-key` here in the same rollout, and restart the pod and executor. Only the public key belongs here. The private
 keys stay in AID's keychain and Kubernetes Secrets.
+
+## AID events (#1349)
+
+`aid-events` is the native MQTT connection in AIDepartment’s common Zuul configuration. Each active pipeline reports
+enqueue, start, terminal and dequeue actions to `aid/zuul/reports` at QoS 1, alongside its existing forge reporters.
+It sends no returned job data. Provision the private broker, scheduler mTLS route and the AID subscriber first
+(AIDepartment’s `deploy/zuul/events/README.md`); then merge this configuration and full-reconfigure. There is no job
+secret involved. The adapter confirms a gate success with the finalized SQL record before announcing a merge: the
+MQTT success report alone precedes Zuul’s merge confirmation.

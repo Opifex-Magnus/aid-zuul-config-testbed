@@ -49,7 +49,6 @@
       github:
         comment: false
 
-
     enqueue:
       aid-events:
         topic: aid/zuul/reports
@@ -59,11 +58,17 @@
       aid-events:
         topic: aid/zuul/reports
         qos: 1
+      github:
+        status: failure
+        comment: true
 
     config-error:
       aid-events:
         topic: aid/zuul/reports
         qos: 1
+      github:
+        status: failure
+        comment: true
 
     no-jobs:
       aid-events:
@@ -114,7 +119,6 @@
       github:
         comment: false
 
-
     enqueue:
       aid-events:
         topic: aid/zuul/reports
@@ -124,11 +128,17 @@
       aid-events:
         topic: aid/zuul/reports
         qos: 1
+      github:
+        status: failure
+        comment: true
 
     config-error:
       aid-events:
         topic: aid/zuul/reports
         qos: 1
+      github:
+        status: failure
+        comment: true
 
     no-jobs:
       aid-events:
@@ -226,16 +236,21 @@
       github:
         comment: false
 
-
     merge-conflict:
       aid-events:
         topic: aid/zuul/reports
         qos: 1
+      github:
+        status: failure
+        comment: true
 
     config-error:
       aid-events:
         topic: aid/zuul/reports
         qos: 1
+      github:
+        status: failure
+        comment: true
 
     no-jobs:
       aid-events:
