@@ -1,0 +1,4 @@
+# The tests' tools (README.md, "Tests"): Ansible as Zuul 14.3.0 runs it (its default, Ansible 11, is ansible-core
+# 2.18), and cryptography, which github-app-token.py takes from Ansible's own dependencies.
+ansible-core>=2.18,<2.19
+cryptography

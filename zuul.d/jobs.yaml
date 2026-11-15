@@ -8,8 +8,12 @@
     description: |
       Every job's parent. Rejects check-external until credential-free nodes exist. For permitted pipelines, starts
       the console stream and puts the change under test, merged onto its branch and
-      onto the changes ahead of it, into the node's workspace (~/src/<host>/<owner>/<repository>).
+      onto the changes ahead of it, into the node's workspace (~/src/<host>/<owner>/<repository>). Afterwards,
+      keeps the build's logs in Zuul's log store, where the build's page shows them (AIDepartment deploy/zuul/web.md).
     pre-run: playbooks/base/pre.yaml
+    # The last post-run of every job, since a child's post-run playbooks run before its parent's: whatever a job's own
+    # post-run left in ~/zuul-output/logs is stored too.
+    post-run: playbooks/base/post-logs.yaml
     roles:
       - zuul: zuul/zuul-jobs
     # AIDepartment's checks time out after 2 hours today (its docs/development.md); a job sets less if it needs less.

@@ -1,0 +1,32 @@
+# The base job's post-run (zuul.d/jobs.yaml): the build's logs into Zuul's log store, and their address for the build's
+# page (AIDepartment deploy/zuul/web.md, "The logs"). The roles are Zuul's own (zuul/zuul-jobs). The copy is the
+# executor's script, store-logs.sh (AIDepartment deploy/zuul/executor/), which only a trusted playbook sees, as only a
+# trusted playbook may write the store (zuul.conf's trusted_ro_paths and trusted_rw_paths).
+
+- hosts: all
+  roles:
+    # What the job left in ~/zuul-output/logs on its node, into the build's log directory on the executor, where Zuul
+    # writes job-output.txt and job-output.json.
+    - fetch-output
+
+- hosts: localhost
+  roles:
+    # zuul-manifest.json, the list of the build's log files that zuul-web's build page browses.
+    - generate-zuul-manifest
+  tasks:
+    - name: Store the build's logs in the log store
+      command:
+        argv:
+          - sh
+          - /etc/zuul-executor/store-logs.sh
+          - "{{ zuul.executor.log_root }}"
+          - "{{ zuul.build }}"
+      register: stored
+
+    # A path, /logs/<day>/<build>/, on zuul-web's origin: AID's Zuul UI and the forwarder both serve /logs/ beside
+    # zuul-web, so the build's page reads the logs from where it is.
+    - name: Tell Zuul where the build's logs are
+      zuul_return:
+        data:
+          zuul:
+            log_url: "{{ stored.stdout }}"

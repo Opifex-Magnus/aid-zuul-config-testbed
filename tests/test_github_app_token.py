@@ -1,0 +1,161 @@
+"""playbooks/release/github-app-token.py against a stand-in for GitHub (stub_github.py), with a key made here.
+
+The helper is run as the release's credential check runs it (playbooks/release/credentials.yaml), with --api pointing
+it at the stand-in. Each test checks its exit status and its one JSON line, the calls it made, that a token it got was
+revoked, and that neither the App's key, nor a JWT, nor the token is in anything it printed.
+"""
+
+import base64
+import hashlib
+import json
+import os
+import subprocess
+import sys
+import unittest
+
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import ec, rsa
+
+sys.path.insert(0, os.path.dirname(__file__))
+import stub_github  # noqa: E402
+
+HELPER = os.path.join(os.path.dirname(__file__), "..", "playbooks", "release", "github-app-token.py")
+
+
+def new_key():
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    pem = key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.TraditionalOpenSSL,
+                            serialization.NoEncryption())
+    return key, pem
+
+
+KEY, PEM = new_key()
+
+
+def github_fingerprint(key):
+    """The fingerprint GitHub shows beside an App's key: SHA-256 of the public key's DER, base64."""
+    der = key.public_key().public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
+    return "SHA256:" + base64.b64encode(hashlib.sha256(der).digest()).decode()
+
+
+def run(stub, pem=PEM, app_id=stub_github.APP_ID, permissions=("contents=write",)):
+    args = [sys.executable, "-I", HELPER, "--app-id", app_id, "--repository", stub_github.REPOSITORY]
+    for permission in permissions:
+        args += ["--permission", permission]
+    args += ["--api", stub.url]
+    result = subprocess.run(args, input=pem, capture_output=True, timeout=60)
+    return result.returncode, result.stdout.decode(), result.stderr.decode()
+
+
+class HelperTest(unittest.TestCase):
+    def assertNoSecret(self, stub, *texts, pem=PEM):
+        key_body = b"".join(pem.splitlines()[1:-1]).decode()
+        for text in texts:
+            self.assertNotIn(key_body[:40], text, "the App's key is in the output")
+            for secret in stub.secrets():
+                self.assertNotIn(secret, text, "a JWT or the token is in the output")
+
+    def assertRefused(self, stub, words, revoked=True):
+        status, out, err = run(stub)
+        self.assertEqual(status, 1, out + err)
+        self.assertEqual(list(json.loads(out)), ["error"], out)
+        self.assertIn(words, json.loads(out)["error"])
+        self.assertEqual(stub.revoked(), revoked, stub.routes())
+        self.assertNoSecret(stub, out, err)
+        return json.loads(out)["error"]
+
+    def test_the_token_is_made_checked_and_revoked(self):
+        with stub_github.StubGitHub(KEY.public_key()) as stub:
+            status, out, err = run(stub)
+        self.assertEqual(status, 0, out + err)
+        self.assertEqual(json.loads(out), {
+            "account": "kristofk", "app_id": 42, "app_slug": "aid-release",
+            "expires_at": "2026-11-14T20:00:00Z", "installation_id": stub_github.INSTALLATION,
+            "key_fingerprint": github_fingerprint(KEY), "permissions": {"contents": "write"},
+            "repository": stub_github.REPOSITORY, "revoked": True,
+        })
+        self.assertEqual(stub.routes(), [
+            ("GET", "/repos/kristofk/AIDepartment/installation"),
+            ("POST", f"/app/installations/{stub_github.INSTALLATION}/access_tokens"),
+            ("GET", "/repos/kristofk/AIDepartment"),
+            ("DELETE", "/installation/token"),
+        ])
+        # The token is asked for that one repository and those permissions only.
+        self.assertEqual(stub.calls[1]["body"], {"repositories": ["AIDepartment"], "permissions": {"contents": "write"}})
+        self.assertTrue(stub.revoked())
+        self.assertNoSecret(stub, out, err)
+
+    def test_a_lesser_grant_is_refused_and_the_token_revoked(self):
+        with stub_github.StubGitHub(KEY.public_key(), granted={"contents": "read"}) as stub:
+            self.assertRefused(stub, "GitHub granted {'contents': 'read'}, not {'contents': 'write'}")
+        self.assertNotIn(("GET", "/repos/kristofk/AIDepartment"), stub.routes(), "the token was used after the refusal")
+
+    def test_a_wider_grant_is_refused_and_the_token_revoked(self):
+        with stub_github.StubGitHub(KEY.public_key(), granted={"contents": "write", "issues": "write"}) as stub:
+            self.assertRefused(stub, "not {'contents': 'write'}")
+
+    def test_another_repository_is_refused_and_the_token_revoked(self):
+        with stub_github.StubGitHub(KEY.public_key(), repositories=[stub_github.REPOSITORY, "kristofk/other"]) as stub:
+            self.assertRefused(stub, "the token reaches ['kristofk/AIDepartment', 'kristofk/other'], not only")
+
+    def test_no_repository_list_is_refused_and_the_token_revoked(self):
+        # A token for every repository of the installation comes with no list.
+        with stub_github.StubGitHub(KEY.public_key(), repositories=None) as stub:
+            self.assertRefused(stub, "the token reaches [], not only kristofk/AIDepartment")
+
+    def test_a_failed_read_is_refused_and_the_token_revoked(self):
+        with stub_github.StubGitHub(KEY.public_key(), fail={"read": 403}) as stub:
+            error = self.assertRefused(stub, "GET /repos/kristofk/AIDepartment: 403")
+        self.assertIn("Resource not accessible by integration", error)
+
+    def test_a_refused_token_leaves_nothing_to_revoke(self):
+        with stub_github.StubGitHub(KEY.public_key(), fail={"mint": 422}) as stub:
+            self.assertRefused(stub, f"POST /app/installations/{stub_github.INSTALLATION}/access_tokens: 422",
+                               revoked=False)
+        self.assertNotIn("DELETE", [method for method, _ in stub.routes()])
+
+    def test_no_installation_on_the_repository_fails(self):
+        with stub_github.StubGitHub(KEY.public_key(), fail={"installation": 404}) as stub:
+            self.assertRefused(stub, "GET /repos/kristofk/AIDepartment/installation: 404", revoked=False)
+        self.assertEqual(len(stub.routes()), 1)
+
+    def test_a_failed_revocation_fails_the_check(self):
+        with stub_github.StubGitHub(KEY.public_key(), fail={"revoke": 500}) as stub:
+            status, out, err = run(stub)
+        self.assertEqual(status, 1, out + err)
+        self.assertIn("DELETE /installation/token: 500", json.loads(out)["error"])
+        self.assertNoSecret(stub, out, err)
+
+    def test_another_key_is_refused_by_github(self):
+        other, other_pem = new_key()
+        with stub_github.StubGitHub(KEY.public_key()) as stub:
+            status, out, err = run(stub, pem=other_pem)
+        self.assertEqual(status, 1, out + err)
+        self.assertIn("GET /repos/kristofk/AIDepartment/installation: 401", json.loads(out)["error"])
+        self.assertEqual(stub.routes(), [("GET", "/repos/kristofk/AIDepartment/installation")])
+        self.assertNoSecret(stub, out, err, pem=other_pem)
+
+    def test_a_key_that_is_not_rsa_is_refused_before_any_call(self):
+        pem = ec.generate_private_key(ec.SECP256R1()).private_bytes(
+            serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption())
+        with stub_github.StubGitHub(KEY.public_key()) as stub:
+            status, out, err = run(stub, pem=pem)
+        self.assertEqual((status, json.loads(out)), (1, {"error": "Failure: the App's key is not an RSA key"}))
+        self.assertEqual(stub.routes(), [])
+
+    def test_what_is_not_a_key_is_refused_before_any_call(self):
+        with stub_github.StubGitHub(KEY.public_key()) as stub:
+            status, out, err = run(stub, pem=b"not a key\n")
+        self.assertEqual(status, 1, out + err)
+        self.assertTrue(json.loads(out)["error"].startswith("ValueError: "), out)
+        self.assertEqual(stub.routes(), [])
+
+    def test_an_app_id_that_is_not_a_number_is_refused_before_any_call(self):
+        with stub_github.StubGitHub(KEY.public_key()) as stub:
+            status, out, _ = run(stub, app_id="42; rm -rf /")
+        self.assertEqual((status, json.loads(out)), (1, {"error": "Failure: --app-id must be the App's number"}))
+        self.assertEqual(stub.routes(), [])
+
+
+if __name__ == "__main__":
+    unittest.main()
