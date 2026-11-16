@@ -112,6 +112,28 @@ class IssueClosingTest(unittest.TestCase):
         with self.assertRaisesRegex(Failure, "did not advance"):
             list(github.closing_issues(5))
 
+    def test_waits_for_github_to_index_the_rebased_commit(self):
+        github = FakeGitHub()
+        original = github.call
+        attempts, sleeps = [], []
+        def delayed(method, path, body=None):
+            if "/commits/" in path:
+                attempts.append(path)
+                if len(attempts) < 3:
+                    return []
+            return original(method, path, body)
+        github.call = delayed
+        self.assertEqual(close(github, OLD, NEW, "main", sleep=sleeps.append)["closed"], [7])
+        self.assertEqual(sleeps, [5, 5])
+
+    def test_direct_push_has_no_closing_issues_and_wait_is_bounded(self):
+        github = FakeGitHub()
+        original = github.call
+        github.call = lambda method, path, body=None: [] if "/commits/" in path else original(method, path, body)
+        sleeps = []
+        self.assertEqual(close(github, OLD, NEW, "main", sleep=sleeps.append)["closed"], [])
+        self.assertEqual(len(sleeps), 12)
+
 
 if __name__ == "__main__":
     unittest.main()

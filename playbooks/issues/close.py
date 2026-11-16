@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 import re
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -78,7 +79,7 @@ class GitHub:
         raise Failure("GitHub closing-issue pagination exceeded 1000 pages")
 
 
-def close(github, oldrev, newrev, branch, merger="aid-zuul[bot]"):
+def close(github, oldrev, newrev, branch, merger="aid-zuul[bot]", sleep=time.sleep):
     if not all(re.fullmatch(r"[0-9a-f]{40}", rev) and rev != "0" * 40 for rev in (oldrev, newrev)):
         raise Failure("oldrev and newrev must be nonzero commit SHAs")
     repo = github.repo("")
@@ -90,9 +91,19 @@ def close(github, oldrev, newrev, branch, merger="aid-zuul[bot]"):
             raise Failure("The push is not a forward update")
         commits.update(commit["sha"] for commit in page["commits"])
     pulls = set()
-    for sha in sorted(commits):
-        for page in github.pages(f"/commits/{sha}/pulls"):
-            pulls.update(pull["number"] for pull in page)
+    # GitHub can deliver the push before it indexes the rebase's commit-to-PR
+    # associations. Retry the missing associations together, for at most a minute.
+    # A direct administrator push legitimately has no associated PR.
+    missing = set(commits)
+    for attempt in range(13):
+        for sha in sorted(missing):
+            associated = [pull for page in github.pages(f"/commits/{sha}/pulls") for pull in page]
+            if associated:
+                pulls.update(pull["number"] for pull in associated)
+                missing.remove(sha)
+        if not missing or attempt == 12:
+            break
+        sleep(5)
     closed, skipped = set(), set()
     for number in sorted(pulls):
         pull = github.repo(f"/pulls/{number}")
