@@ -1,0 +1,87 @@
+# aid-nightly-report's run (zuul.d/publish.yaml), on the executor, in report.py's three steps. The first two have no
+# credential: whether this pipeline's nightly is reported here (04:00 in Madrid, and ci/publisher names Zuul), then
+# aid-nightly's result in this buildset, waited for for up to 110 minutes. Only then is a token of the App aid-release
+# made, with issues: write alone, since such a token lasts an hour; report.py writes the result to the ci-nightly issue
+# with it at once, and the token is revoked whatever happens. The key and the token never reach a task whose output
+# is read (AIDepartment#1542), as in playbooks/release/credentials.yaml.
+- hosts: localhost
+  gather_facts: false
+  vars:
+    nightly_report: ["{{ ansible_playbook_python }}", "{{ playbook_dir }}/report.py"]
+  tasks:
+    - name: Whether this nightly is reported here
+      ansible.builtin.command:
+        argv: "{{ nightly_report + ['decide', '--pipeline', zuul.pipeline, '--publisher-file',
+                zuul.executor.work_root ~ '/' ~ zuul.project.src_dir ~ '/ci/publisher'] }}"
+      register: nightly_decided
+      changed_when: false
+    - name: The decision
+      ansible.builtin.debug:
+        msg: "{{ nightly_decided.stdout | from_json }}"
+    - name: The report
+      when: (nightly_decided.stdout | from_json).report
+      block:
+        - name: aid-nightly's result in this buildset
+          ansible.builtin.command:
+            argv: "{{ nightly_report + ['wait', '--zuul', nightly_zuul_api, '--tenant', zuul.tenant, '--buildset', zuul.buildset] }}"
+          register: nightly_waited
+          changed_when: false
+        - name: A directory of its own for the App's key and token
+          ansible.builtin.tempfile:
+            state: directory
+            suffix: -nightly
+          register: nightly_dir
+        - name: The App's key, readable by the job alone
+          ansible.builtin.copy:
+            content: "{{ aid_release_github.private_key }}"
+            dest: "{{ nightly_dir.path }}/key.pem"
+            mode: "0600"
+          vars:
+            ansible_remote_tmp: "{{ nightly_dir.path }}"
+          no_log: true
+        - name: A token of the App with issues write, made and checked, now that the result is known
+          ansible.builtin.command:
+            argv:
+              - "{{ ansible_playbook_python }}"
+              - "{{ playbook_dir }}/../release/github-app-token.py"
+              - --app-id
+              - "{{ aid_release_github.app_id }}"
+              - --repository
+              - kristofk/AIDepartment
+              - --permission
+              - issues=write
+              - --key-file
+              - "{{ nightly_dir.path }}/key.pem"
+              - --keep
+              - "{{ nightly_dir.path }}/token"
+          changed_when: false
+        - name: The App's key removed
+          ansible.builtin.file:
+            path: "{{ nightly_dir.path }}/key.pem"
+            state: absent
+        - name: aid-nightly's result, to the ci-nightly issue
+          ansible.builtin.command:
+            argv: "{{ nightly_report + ['report', '--result', (nightly_waited.stdout | from_json).result | default('', true),
+                    '--build-url', zuul_web_root ~ '/t/' ~ zuul.tenant ~ '/buildset/' ~ zuul.buildset,
+                    '--token-file', nightly_dir.path ~ '/token'] }}"
+          register: nightly_reported
+          changed_when: false
+        - name: What it did
+          ansible.builtin.debug:
+            msg: "{{ nightly_reported.stdout | from_json }}"
+      always:
+        - name: The App's token revoked
+          ansible.builtin.command:
+            argv:
+              - "{{ ansible_playbook_python }}"
+              - "{{ playbook_dir }}/../release/github-app-token.py"
+              - --revoke
+              - "{{ nightly_dir.path }}/token"
+          changed_when: false
+          failed_when: false
+          when: nightly_dir.path is defined
+        - name: Its directory removed
+          ansible.builtin.file:
+            path: "{{ nightly_dir.path }}"
+            state: absent
+          when: nightly_dir.path is defined

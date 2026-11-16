@@ -1,0 +1,10 @@
+# The record stage of a publishing job (zuul.d/publish.yaml), on its post node: stage.yaml, with the credentials the
+# job's publish_stages gives this stage.
+- hosts: all
+  tasks:
+    - name: The record stage
+      ansible.builtin.include_tasks: stage.yaml
+      vars:
+        publish_stage: record
+        publish_permissions: "{{ publish_stages.record.permissions }}"
+        publish_pusher: "{{ publish_stages.record.pusher | default(false) }}"

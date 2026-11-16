@@ -1,0 +1,6 @@
+# Zuul itself, for its Ansible plugins only (test_playbooks.py): the command module and callbacks a playbook runs with
+# on the executor. Installed without its dependencies, which the plugins do not need, but for re2, which its
+# zuul_stream callback imports (README.md, "Tests"):
+#   pip install --no-deps -r tests/zuul-requirements.txt
+zuul==14.3.0
+google-re2

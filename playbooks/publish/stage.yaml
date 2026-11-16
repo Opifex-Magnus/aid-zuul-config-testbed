@@ -1,0 +1,110 @@
+# One stage of a publishing job (zuul.d/publish.yaml; AIDepartment's ci/zuul/publish.md): AIDepartment's stage script,
+# run on the post node from main's checkout, with only the credentials that stage uses, made as it starts and gone when
+# it ends. Included by each stage's playbook beside it, with:
+#   publish_script        the script, ci/zuul/publish/<job>.sh
+#   publish_stage         its stage: build, push, record or report
+#   publish_permissions   the App aid-release's permissions for this stage's token ([] for none)
+#   publish_pusher        whether the stage gets Zuul's token for the pusher (the secret aid_pusher)
+# and the job's variables: publish_endpoints, ThunderBox's endpoints for the image jobs, and zuul_web_root. What one
+# stage hands the next is in publish_root on the node (the scripts' ZUUL_STATE); the stage's tokens are in
+# publish_credentials, which the stage removes as it ends.
+#
+# The App's key never leaves the executor: its token is made there (playbooks/release/github-app-token.py --keep), and
+# only the token goes to the node, readable by the job's user alone, and is revoked at the end, whatever happened. As
+# in playbooks/release/credentials.yaml, no task whose output is read has a secret in its arguments (AIDepartment#1542).
+- name: The stage, with only its credentials
+  block:
+    - name: ThunderBox's endpoints are set
+      ansible.builtin.assert:
+        that: publish_endpoints | dict2items | selectattr('value', 'equalto', '') | list | length == 0
+        fail_msg: >-
+          {{ zuul.job }}'s publish_endpoints has no value for
+          {{ publish_endpoints | dict2items | selectattr('value', 'equalto', '') | map(attribute='key') | join(', ') }}
+          (AIDepartment's ci/zuul/publish.md, "Turning it on")
+    - name: The stage's own folder on the node, for its tokens
+      ansible.builtin.file:
+        path: "{{ publish_credentials }}"
+        state: directory
+        mode: "0700"
+    - name: A directory of its own on the executor, for the App's key and token
+      ansible.builtin.tempfile:
+        state: directory
+        suffix: -publish
+      register: publish_executor_dir
+      delegate_to: localhost
+      when: publish_permissions | length > 0
+    - name: The App's key, readable by the job alone
+      ansible.builtin.copy:
+        content: "{{ aid_release_github.private_key }}"
+        dest: "{{ publish_executor_dir.path }}/key.pem"
+        mode: "0600"
+      # A connection variable of a delegated task is templated as localhost's, where the node's registered
+      # publish_executor_dir is undefined: so by the node's hostvars (AIDepartment#1615).
+      vars:
+        ansible_remote_tmp: "{{ hostvars[inventory_hostname].publish_executor_dir.path }}"
+      delegate_to: localhost
+      no_log: true
+      when: publish_permissions | length > 0
+    - name: A token of the App for this stage, made and checked
+      ansible.builtin.command:
+        argv: >-
+          {{ [ansible_playbook_python, playbook_dir ~ '/../release/github-app-token.py',
+              '--app-id', aid_release_github.app_id | string, '--repository', 'kristofk/AIDepartment']
+             + (publish_permissions | map('regex_replace', '^', '--permission=') | list)
+             + ['--key-file', publish_executor_dir.path ~ '/key.pem', '--keep', publish_executor_dir.path ~ '/token'] }}
+      changed_when: false
+      delegate_to: localhost
+      when: publish_permissions | length > 0
+    - name: The App's key removed
+      ansible.builtin.file:
+        path: "{{ publish_executor_dir.path }}/key.pem"
+        state: absent
+      delegate_to: localhost
+      when: publish_permissions | length > 0
+    - name: The App's token, on the node for this stage
+      ansible.builtin.copy:
+        src: "{{ publish_executor_dir.path }}/token"
+        dest: "{{ publish_credentials }}/github-token"
+        mode: "0600"
+      no_log: true
+      when: publish_permissions | length > 0
+    - name: Zuul's token for the pusher, on the node for this stage
+      ansible.builtin.copy:
+        content: "{{ aid_pusher }}"
+        dest: "{{ publish_credentials }}/pusher-token"
+        mode: "0600"
+      no_log: true
+      when: publish_pusher | bool
+    - name: "{{ publish_script }} {{ publish_stage }}"
+      ansible.builtin.command:
+        argv: ["./{{ publish_script }}", "{{ publish_stage }}"]
+        chdir: "{{ zuul.project.src_dir }}"
+      environment: >-
+        {{ publish_endpoints | combine({
+             'ZUUL_PIPELINE': zuul.pipeline, 'ZUUL_OLDREV': zuul.oldrev, 'ZUUL_NEWREV': zuul.newrev,
+             'ZUUL_BUILD': zuul.build, 'ZUUL_BUILD_URL': zuul_web_root ~ '/t/' ~ zuul.tenant ~ '/build/' ~ zuul.build,
+             'ZUUL_STATE': publish_root,
+             'CI_GITHUB_TOKEN_FILE': (publish_credentials ~ '/github-token') if publish_permissions | length > 0 else '',
+             'CI_PUBLISH_TOKEN_FILE': (publish_credentials ~ '/pusher-token') if publish_pusher | bool else ''}) }}
+  always:
+    - name: The stage's tokens removed from the node
+      ansible.builtin.file:
+        path: "{{ publish_credentials }}"
+        state: absent
+    - name: The App's token revoked
+      ansible.builtin.command:
+        argv:
+          - "{{ ansible_playbook_python }}"
+          - "{{ playbook_dir }}/../release/github-app-token.py"
+          - --revoke
+          - "{{ publish_executor_dir.path }}/token"
+      changed_when: false
+      delegate_to: localhost
+      when: publish_executor_dir.path is defined
+      failed_when: false
+    - name: The executor's directory removed
+      ansible.builtin.file:
+        path: "{{ publish_executor_dir.path }}"
+        state: absent
+      delegate_to: localhost
+      when: publish_executor_dir.path is defined

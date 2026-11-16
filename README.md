@@ -6,7 +6,7 @@ the jobs with secrets and their secrets (AIDepartment#1351). AIDepartment's own 
 
 | Path | What |
 | --- | --- |
-| [`zuul.d/pipelines.yaml`](zuul.d/pipelines.yaml) | `check`, `check-external` and `gate`, reported as check runs of the App `aid-zuul`, and `hold`, which takes a pull request out of `gate` and reports nothing. AIDepartment's `ci/zuul/gate.md` says how `gate` and `hold` do what Mergify does |
+| [`zuul.d/pipelines.yaml`](zuul.d/pipelines.yaml) | `check`, `check-external` and `gate`, reported as check runs of the App `aid-zuul`, and `hold`, which takes a pull request out of `gate` and reports nothing. AIDepartment's `ci/zuul/gate.md` says how `gate` and `hold` do what Mergify does. `post` after a merge, and `periodic-0200` and `periodic-0300` at 02:00 and 03:00 UTC, all post-review (AIDepartment's `ci/zuul/publish.md`) |
 | [`zuul.d/jobs.yaml`](zuul.d/jobs.yaml) | `base`, every job's parent: one build node, a 2-hour timeout, the checkout, and the build's logs kept (AIDepartment deploy/zuul/web.md) |
 | [`playbooks/base/`](playbooks/base) | the base job's playbooks |
 | [`zuul.d/project.yaml`](zuul.d/project.yaml) | this repository's own `check`, which validates a pull request here and runs nothing |
@@ -14,6 +14,9 @@ the jobs with secrets and their secrets (AIDepartment#1351). AIDepartment's own 
 | `zuul.d/secrets.yaml` | the secrets, each encrypted for this project's key by AIDepartment's `deploy/zuul/encrypt-secret.sh` |
 | [`playbooks/secrets/guard.yaml`](playbooks/secrets/guard.yaml) | the pre-run of every job with a secret |
 | [`playbooks/release/`](playbooks/release) | the release's credential check: a token of the App `aid-release`, made, checked and revoked |
+| [`zuul.d/publish.yaml`](zuul.d/publish.yaml) | what publishes from AIDepartment's `main` (AIDepartment#1350): `aid-publish-apps` and `aid-release` for `post`, on the post node, and `aid-nightly-report` for the periodic pipelines. They run for AIDepartment from step 4 of AIDepartment's `ci/zuul/publish.md`, "Turning it on", and publish nothing while its `ci/publisher` names Actions |
+| [`playbooks/publish/`](playbooks/publish) | their stages: AIDepartment's script for the job, one stage per playbook, each with only the credentials it uses (`stage.yaml`) |
+| [`playbooks/nightly/`](playbooks/nightly) | the nightly's result, to AIDepartment's `ci-nightly` issue |
 | [`tests/`](tests) | the tests of the release's credential check and of the guard ([Tests](#tests)) |
 
 ## Trusted
@@ -41,7 +44,7 @@ define no pipeline and no base job, and Zuul refuses either with a configuration
 
 ## The build node
 
-`zuul.d/providers.yaml` registers one PR-only k3s pod as `aid-node` (AIDepartment#1345). Its deployment, checked image,
+`zuul.d/providers.yaml` registers one PR-only k3s pod as `aid-node` (AIDepartment#1345). A second provider, `aid-k3s-post`, registers the post node as `aid-post-node` (AIDepartment#1350): only `zuul.d/publish.yaml`'s jobs name it. The labels `aid-gate-node` and `aid-staging-node` are the gate's image and staging nodes' (AIDepartment#1521), named by AIDepartment's own nodesets. A third provider, `aid-k3s-gate`, registers the gate's image node as `aid-gate-node`; the staging node has no provider until it exists. Its deployment, checked image,
 network policies and quota are AIDepartment's `deploy/zuul/node/`. Zuul's static provider assigns one job at a time;
 `base` bounds a job at 7200 seconds. The shared connection `aid-nodes` is `driver=static` in the deployed `zuul.conf`.
 
@@ -61,6 +64,20 @@ The node's SSH host key is pinned in the provider. On rotation, generate the new
 `host-key` here in the same rollout, and restart the pod and executor. Only the public key belongs here. The private
 keys stay in AID's keychain and Kubernetes Secrets.
 
+## AID events (#1349)
+
+`aid-events` is the native MQTT connection in AIDepartment’s common Zuul configuration. Each active pipeline reports
+enqueue, start, terminal and dequeue actions to `aid/zuul/reports` at QoS 1, alongside its existing forge reporters.
+It sends no returned job data. Provision the private broker, scheduler mTLS route and the AID subscriber first
+(AIDepartment’s `deploy/zuul/events/README.md`); then merge this configuration and full-reconfigure. There is no job
+secret involved. The adapter confirms a gate success with the finalized SQL record before announcing a merge: the
+MQTT success report alone precedes Zuul’s merge confirmation.
+
+AIDepartment#1526: the first merge of these reporters (#8) preceded the connection, and the running scheduler
+unloaded `check`, `check-external` and `gate`. `aid/check` is the running scheduler's own load of a pull request's
+configuration, so it must pass on the pull request before it merges. AIDepartment's `deploy/zuul/protect-config.sh`
+makes `main` require it (pending: ThunderBox's step 11a).
+
 ## Jobs with secrets
 
 AIDepartment's `deploy/zuul/job-secrets.md` has the model: each secret's plaintext is in AID's keychain, and jobs get
@@ -69,7 +86,8 @@ job that names one:
 
 - is defined here, in a file of `zuul.d/` with only such jobs and where they run (the test bed leaves those files out);
 - is `final: true` and `post-review: true`, with `allowed-projects`;
-- runs with `nodeset: {nodes: []}`, or on a node of its own, never `aid-node`;
+- runs with `nodeset: {nodes: []}`, or on a node of its own, never `aid-node`: the publishing jobs run on `aid-post-node`
+  (AIDepartment's `deploy/zuul/post-node/`), which only they name;
 - starts with `pre-run: playbooks/secrets/guard.yaml`, and sets `secret_pipelines` and `secret_projects` in its `vars`.
 
 To add or rotate a secret, encrypt it from the keychain with `deploy/zuul/encrypt-secret.sh --expect-key <the key in
@@ -80,23 +98,46 @@ run uses it.
 ## Tests
 
 [`tests/`](tests) holds the tests of the trusted code that handles a secret. They run under real Ansible, as Zuul
-14.3.0 runs it (ansible-core 2.18), against a stand-in for GitHub's API, with a key made for the run. No credential is
-needed and nothing reaches GitHub.
+14.3.0 runs it (ansible-core 2.18), with Zuul's own Ansible plugins set up as its executor sets them up: its `command`
+module and its callbacks, which write the build's log. They run against a stand-in for GitHub's API, with a key made
+for the run. No credential is needed and nothing reaches GitHub.
 
-- `test_github_app_token.py` runs `playbooks/release/github-app-token.py`. It checks:
+Zuul's `command` module keeps none of a `no_log` task's output, not even for `register` (AIDepartment#1542): a task
+whose output a playbook reads must have no secret in its arguments, and so no `no_log`. Plain Ansible keeps it, which
+is why the tests run Zuul's plugins.
+
+- `test_github_app_token.py` runs `playbooks/release/github-app-token.py`, with the key on stdin or in a file
+  (`--key-file`, as the playbook gives it). It checks:
   - the JWT (RS256, the App's ID, at most ten minutes);
   - the token asked for: AIDepartment alone, `contents: write`;
   - a refusal of a lesser or wider grant, another repository or none listed, a failed read, a refused token, no
-    installation, another key, a key that is not RSA, and an App ID that is not a number;
+    installation, another key, a key that is not RSA, a missing key file, and an App ID that is not a number;
   - revocation after a success and after each refusal, and a failed revocation failing the check;
   - that no key, JWT or token reaches its output.
 - `test_playbooks.py` runs `playbooks/release/credentials.yaml` at Ansible's highest verbosity. It checks the build's
-  artifact `release-credential`, the playbook's failure when the check fails, and that `no_log` keeps the key out of
-  the output. It also runs `playbooks/secrets/guard.yaml`: a merged ref in its pipeline and for its project passes, and
-  a change, another pipeline or another project fails without a retry. `zuul_return` is a stand-in
-  (`tests/plugins/action/`) that records what a playbook returns.
+  artifact `release-credential`; the helper's output in the build's log; the playbook's failure at the helper's task,
+  with GitHub's answer in the log, when the check fails; the key's file, `0600` in a directory of its own in the job's
+  `TMP`, removed afterwards; and that the key, a JWT or the token reaches neither Ansible's output, nor the build's log,
+  nor the console log. It also runs `playbooks/secrets/guard.yaml`: a merged ref in its pipeline and for its project
+  passes, and a change, another pipeline or another project fails without a retry. And it checks that its Ansible is
+  Zuul's: a `no_log` command task registers no output. `zuul_return` is a stand-in (`tests/plugins/action/`) that
+  records what a playbook returns.
+
+- `test_publish.py` runs each stage of `playbooks/publish/` the same way, with a stand-in for AIDepartment's stage
+  script that records what reached it: each stage's App token with only its permissions, or none; Zuul's pusher token
+  in `push` alone; both `0600` on the node, and gone, the App's revoked, when the stage ends, after a failure too; a
+  `publish_endpoints` without a value failing before anything; and `report` only after a failure. It runs
+  `playbooks/nightly/report.py`'s steps against stand-ins for Zuul's API and GitHub's issues: `decide` lets through
+  only the pipeline whose time is 04:00 in Madrid, across both changes of the clock and after a wait past the other
+  pipeline's time, and only while AIDepartment's `ci/publisher` names Zuul; `wait` reads Zuul's buildset API (the
+  stand-in refuses the builds API's filters, as Zuul 14.3.0 does), for over an hour and to its deadline, with no
+  credential; `report` closes the open `ci-nightly` issue on a pass, and opens it or comments on it otherwise. And
+  `playbooks/nightly/report.yaml` under Zuul's Ansible: its App token is made only after `wait`, and revoked.
+
+ansible-core 2.18 runs on Python 3.11 to 3.13:
 
 ```sh
-python3 -m venv /tmp/cfg-tests && /tmp/cfg-tests/bin/pip install -r tests/requirements.txt
+python3.12 -m venv /tmp/cfg-tests && /tmp/cfg-tests/bin/pip install -r tests/requirements.txt
+/tmp/cfg-tests/bin/pip install --no-deps -r tests/zuul-requirements.txt
 PATH=/tmp/cfg-tests/bin:$PATH python -I -m unittest discover -s tests -v
 ```

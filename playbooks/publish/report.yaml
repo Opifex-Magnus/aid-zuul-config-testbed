@@ -1,0 +1,11 @@
+# The report stage of a publishing job (zuul.d/publish.yaml), on its post node, as its post-run: only after a failure,
+# when stage.yaml runs the job's script's report with the credentials the job's publish_stages gives it.
+- hosts: all
+  tasks:
+    - name: The report stage
+      ansible.builtin.include_tasks: stage.yaml
+      vars:
+        publish_stage: report
+        publish_permissions: "{{ publish_stages.report.permissions }}"
+        publish_pusher: "{{ publish_stages.report.pusher | default(false) }}"
+      when: not (zuul_success | bool)

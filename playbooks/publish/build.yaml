@@ -1,0 +1,10 @@
+# The build stage of a publishing job (zuul.d/publish.yaml), on its post node: stage.yaml, with the credentials the
+# job's publish_stages gives this stage.
+- hosts: all
+  tasks:
+    - name: The build stage
+      ansible.builtin.include_tasks: stage.yaml
+      vars:
+        publish_stage: build
+        publish_permissions: "{{ publish_stages.build.permissions }}"
+        publish_pusher: "{{ publish_stages.build.pusher | default(false) }}"

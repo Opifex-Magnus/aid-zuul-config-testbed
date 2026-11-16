@@ -1,0 +1,3 @@
+# Python's compiled files, from running the tests (README.md, "Tests"): build output, never source (AIDepartment#1612).
+__pycache__/
+*.pyc
