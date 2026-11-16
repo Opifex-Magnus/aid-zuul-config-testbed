@@ -80,6 +80,21 @@ makes `main` require it (pending: ThunderBox's step 11a).
 
 ## Jobs with secrets
 
+`aid-close-merged-issues` (`zuul.d/issues.yaml`, AIDepartment#1656) is a trusted, nodeless `post-issues` job. After a
+default-branch push, it closes GitHub's closing-issue links for PRs whose rebase merge by `aid-zuul[bot]` landed in
+that push. Its token is scoped to AIDepartment with Contents read, Pull requests read and Issues write; it uses
+`aid-release`'s existing encrypted key. **Activation is pending**: the owner must add and accept Pull requests read
+for that App before merging this job. The token helper checks the accepted permissions. The key and token remain
+on the executor; the token is revoked on success or failure. External issue links are reported and skipped.
+The helper waits up to a minute for GitHub's delayed commit-to-PR index, handles pagination and leaves already
+closed issues alone. Recovery can replay `playbooks/issues/close.py` with the push's old/new revisions and a newly
+scoped token. AIDepartment's `ci/zuul/gate.md`, "Closing linked issues", records the original failure and live proof.
+
+`post-issues` is post-review with an independent manager, so every main push is retained even while an earlier
+buildset is active. It must stay separate from `post`, whose supercedent manager discards intermediate queued
+pushes: closing only a surviving push's old/new revision range would miss the dropped merge's issues. The job's
+guard allowlist contains only `post-issues`; it refuses `post`, PR changes, and other projects.
+
 AIDepartment's `deploy/zuul/job-secrets.md` has the model: each secret's plaintext is in AID's keychain, and jobs get
 it only as a secret here, encrypted for this project's key. A secret is defined only here, never in AIDepartment, and a
 job that names one:
@@ -96,6 +111,14 @@ as it loads the proposed configuration, so a stanza for another key is reported 
 run uses it.
 
 ## Tests
+
+The focused issue-closure suite is `python -I -B -m unittest discover -s tests -p 'test_issue_closing*.py' -v`.
+It includes the real Ansible guard with the closer job's checked-in allowlist. `tests/check_issue_queue.py` runs in
+the pinned scheduler image, with its complete runtime dependencies: `python3 -I -B tests/check_issue_queue.py`.
+The testbed's `issue_closing_only` workflow runs it before the live GitHub probe. It uses the installed managers'
+queue allocation and supercedent pruning with stand-ins for storage and base enqueue persistence, then calls the
+production closer for the surviving pushes. An active A with B and C queued drops B under the original `post`
+manager; the configured `post-issues` manager retains both merges and completes both linked issues.
 
 [`tests/`](tests) holds the tests of the trusted code that handles a secret. They run under real Ansible, as Zuul
 14.3.0 runs it (ansible-core 2.18), with Zuul's own Ansible plugins set up as its executor sets them up: its `command`

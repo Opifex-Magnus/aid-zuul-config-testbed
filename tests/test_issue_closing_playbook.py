@@ -6,13 +6,56 @@ import shutil
 import sys
 import tempfile
 import unittest
+import yaml
 
 sys.path.insert(0, os.path.dirname(__file__))
 import stub_github
 from test_github_app_token import KEY, PEM
-from test_playbooks import HELPER, ROOT, ansible, setUpModule
+from test_playbooks import GUARD, HELPER, ROOT, ansible, setUpModule
 
 PERMISSIONS = {"contents": "read", "pull_requests": "read", "issues": "write"}
+
+
+class CloserGuardPlaybookTest(unittest.TestCase):
+    def setUp(self):
+        self.config = yaml.safe_load((Path(ROOT) / "zuul.d/issues.yaml").read_text())
+        self.job = next(item["job"] for item in self.config if "job" in item)
+
+    def test_job_is_bound_only_to_the_push_retaining_pipeline(self):
+        project = next(item["project"] for item in self.config if "project" in item)
+        self.assertEqual(project, {"name": "kristofk/AIDepartment", "post-issues": {
+            "jobs": ["aid-close-merged-issues"],
+        }})
+        self.assertEqual(self.job["vars"]["secret_pipelines"], ["post-issues"])
+        pipeline = next(item["pipeline"] for item in yaml.safe_load(
+            (Path(ROOT) / "zuul.d/pipelines.yaml").read_text())
+            if item["pipeline"]["name"] == "post-issues")
+        self.assertEqual(pipeline["manager"], "independent")
+        self.assertTrue(pipeline["post-review"])
+        self.assertTrue(self.job["post-review"])
+        self.assertTrue(self.job["final"])
+        self.assertEqual(pipeline["trigger"], {"github": [{"event": "push", "ref": "^refs/heads/main$"}]})
+
+    def guard(self, **changes):
+        variables = {"zuul": {
+            "job": self.job["name"], "pipeline": "post-issues", "ref": "refs/heads/main",
+            "project": {"canonical_name": "github.com/kristofk/AIDepartment"}, **changes,
+        }, **self.job["vars"]}
+        with tempfile.TemporaryDirectory(prefix="issue-closer-guard-") as work:
+            return ansible(GUARD, variables, work)
+
+    def test_merged_ref_in_post_issues_is_allowed(self):
+        status, output, returned = self.guard()
+        self.assertEqual(status, 0, output)
+        self.assertEqual(returned, [])
+
+    def test_post_gate_check_changes_and_other_projects_are_refused(self):
+        for changes in ({"pipeline": "post"}, {"pipeline": "gate"}, {"pipeline": "check"},
+                        {"change": "1657"}, {"project": {"canonical_name": "github.com/other/repo"}}):
+            with self.subTest(changes=changes):
+                status, output, returned = self.guard(**changes)
+                self.assertNotEqual(status, 0, output)
+                self.assertEqual(returned, [{"zuul": {"retry": False}}])
 
 
 class CloserPlaybookTest(unittest.TestCase):

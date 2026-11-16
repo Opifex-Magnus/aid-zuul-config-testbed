@@ -1,6 +1,6 @@
 """Close GitHub's closing-issue links after Zuul rebase merges (AIDepartment#1656).
 
-Runs only from the trusted post job, with a repository-scoped aid-release token:
+Runs only from the trusted post-issues job, with a repository-scoped aid-release token:
 contents: read, pull_requests: read, issues: write. Never parses PR prose or
 executes repository code. Re-running an already completed push is a no-op.
 """
