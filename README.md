@@ -47,14 +47,14 @@ define no pipeline and no base job, and Zuul refuses either with a configuration
 ## The build node
 
 `zuul.d/providers.yaml` allocates disposable Kubernetes pods for `aid-check-pod-node`, `aid-gate-pod-node` and `aid-post-pod-node`
-(AIDepartment#1698). Each provider has one pod slot, `reuse: false` and a separate connection/namespace:
+(AIDepartment#1698). The check provider has two pod slots (AIDepartment#1862), gate and post one each; every provider has `reuse: false` and a separate connection/namespace:
 `aid-check-pods` / `zuul-nodes`, `aid-gate-pods` / `zuul-gate`, and `aid-post-pods` / `zuul-post`. Provider and label names are distinct from the retired static nodes (AIDepartment#1754). Post-review publishing stays on the post identity and never uses the PR node's farm credential.
 
 AIDepartment's pinned launcher adds fixed-namespace support to Zuul 14.3's Kubernetes driver. The admin-owned
 `PodTemplate/job-node` supplies the checked image, resource budget, security, mounts and service account. The
 provider's `spec: {}` satisfies the upstream label schema; the launcher never uses it as a job-controlled pod spec.
 The launcher can create/delete pods and read the template in the three bounded namespaces, but cannot create
-namespaces, modify policy/RBAC/templates, or read Secrets. The namespace quotas admit one pod each; jobs queue in
+namespaces, modify policy/RBAC/templates, or read Secrets. The namespace quotas admit two check pods and one gate and one post pod, matching each provider's limit; jobs queue in
 Zuul. Pods and their homes/processes are deleted after every job. Shared caches are read-only to jobs.
 
 The Docker staging VM stays on `aid-nodes`' static provider as `aid-staging-node`: the base job resets its snapshot
@@ -177,3 +177,23 @@ new requests in Zuul's actual launcher filter or resolve to the Kubernetes provi
 isolates the provider and label barriers, verifies fresh pod allocations still match, and exercises drained
 static cleanup with the upstream static driver. It also checks base/post/gate nodesets and the Compose fixture
 against the coordinated AID checkout. An old provider name or label makes the regression fail.
+
+## Native launcher only (AIDepartment#1492)
+
+All production labels must be supplied by the native providers in `zuul.d/providers.yaml`.
+There is no Nodepool service. Tenant `aid` must set `use-nodepool: false`; the tenant file is owned by
+AIDepartment at `deploy/zuul/server/config/main.yaml`, rather than by this config project. Its Compose
+fixture sets the same flag and checks that a job requesting an unknown label fails configuration
+before any build dispatch. Keep this policy separate from provider `resource-limits` changes.
+
+The orchestrator applies only reviewed, merged commits, then full-reconfigures and follows
+[AIDepartment's migration runbook](https://github.com/kristofk/AIDepartment/blob/main/deploy/thunderbox/zuul.md#completing-the-native-launcher-migration-1492).
+Disabling fallback does not convert pre-provider Nodepool requests: inventory their owning queue items,
+dequeue/cancel through Zuul, verify cleanup, recheck the current head and author permission, and replay
+only eligible collaborator checks. Never mutate ZooKeeper request records by hand or bypass the
+`check-external` guard. Check, gate, post and staging retain their separate trust levels.
+
+A ready node, SSH and direct remote Bazel are insufficient rollout acceptance. Require a real
+Zuul-dispatched collaborator job on the loaded native provider to complete successfully; record its
+head, buildset/build/log URLs, provider/node and executor start, and prove no legacy requests remain
+waiting before releasing admissions. This PR authorizes no live apply; the orchestrator merges here.

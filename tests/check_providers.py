@@ -33,12 +33,12 @@ for name, stanza in by_kind['provider'].items():
         for item in result[kind+'s']:
             item['project_canonical_name'] = 'github.com/kristofk/aid-zuul-config'
     print(name, 'schema OK', result['connection'], result['resource_limits'])
-    assert result['resource_limits'] == {'pods': 1}
+    assert result['resource_limits'] == {'pods': 2 if name == 'aid-k3s-check-pods' else 1}
     assert len(result['labels']) == len(result['images']) == 1
     label, image = result['labels'][0], result['images'][0]
     assert not label['reuse'] and label['slots'] == 1
     assert image['connection_type'] == 'ssh' and image['connection_port'] == 2222
-print('All three bounded Kubernetes providers pass the Zuul 14.3 schema; one slot each, no reuse, SSH on 2222.')
+print('All three bounded Kubernetes providers pass the Zuul 14.3 schema; two check pods, one gate and one post, one slot per pod, no reuse, SSH on 2222.')
 
 check_labels(ssh_labels)
 print('All three real provider labels scanned SSH host keys; executor known_hosts populated without disabling strict checking.')
