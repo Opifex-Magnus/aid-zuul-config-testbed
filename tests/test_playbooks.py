@@ -290,5 +290,83 @@ class GuardPlaybookTest(unittest.TestCase):
         self.assertRefused(project={"canonical_name": "github.com/kristofk/other"})
 
 
+STAGING_RESET = os.path.join(ROOT, "playbooks", "base", "staging-reset.yaml")
+STAGING_CLEANUP = os.path.join(ROOT, "playbooks", "base", "cleanup.yaml")
+STAGING_NODE = "staging-node.zuul-staging.svc.cluster.local"
+
+
+class StagingResetTest(unittest.TestCase):
+    """staging-reset.yaml and cleanup.yaml (AIDepartment#1655): the staging node's reset, posted to a stand-in for the
+    VM's container. Each playbook is copied with the reset's address pointed at the stand-in, the node's name kept."""
+
+    def setUp(self):
+        import http.server
+        import threading
+        self.posts = []
+        posts = self.posts
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                posts.append(self.path)
+                self.send_response(200)
+                self.send_header("content-length", "2")
+                self.end_headers()
+                self.wfile.write(b"{}")
+
+            def log_message(self, *args):
+                pass
+
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.addCleanup(self.server.shutdown)
+        self.work = tempfile.mkdtemp(prefix="staging-")
+        self.addCleanup(shutil.rmtree, self.work)
+
+    def run_playbook(self, playbook, hosts):
+        with open(playbook) as handle:
+            text = handle.read()
+        url = f"http://{STAGING_NODE}:8080/reset"
+        self.assertEqual(text.count(url), 1, "one reset, at the node's own name")
+        copy = os.path.join(self.work, os.path.basename(playbook))
+        with open(copy, "w") as handle:
+            handle.write(text.replace(url, f"http://127.0.0.1:{self.server.server_port}/reset"))
+        inventory = os.path.join(self.work, "inventory.ini")
+        with open(inventory, "w") as handle:
+            handle.write("localhost ansible_connection=local\n[all]\n")
+            for name, host in hosts.items():
+                handle.write(f"{name} ansible_host={host} ansible_connection=local\n")
+        run = tempfile.mkdtemp(prefix="run-", dir=self.work)
+        return ansible(copy, {}, run, inventory=inventory)
+
+    def test_a_job_on_the_staging_node_resets_it_and_waits_for_it(self):
+        status, output, _ = self.run_playbook(STAGING_RESET, {"node": STAGING_NODE})
+        self.assertEqual(status, 0, output)
+        self.assertEqual(self.posts, ["/reset"])
+        self.assertIn("Wait for the staging node's new VM", output)
+
+    def test_a_job_on_other_nodes_resets_nothing(self):
+        status, output, _ = self.run_playbook(STAGING_RESET, {"node": "node-0.node.zuul-nodes.svc.cluster.local"})
+        self.assertEqual(status, 0, output)
+        self.assertEqual(self.posts, [])
+
+    def test_cleanup_resets_the_staging_node_only(self):
+        status, output, _ = self.run_playbook(STAGING_CLEANUP, {"node": STAGING_NODE, "other": "node-0.node.zuul-nodes.svc.cluster.local"})
+        self.assertEqual(status, 0, output)
+        self.assertEqual(self.posts, ["/reset"])
+        status, output, _ = self.run_playbook(STAGING_CLEANUP, {"other": "node-0.node.zuul-nodes.svc.cluster.local"})
+        self.assertEqual(status, 0, output)
+        self.assertEqual(self.posts, ["/reset"], "no second reset without the staging node")
+
+    def test_the_base_job_resets_before_the_checkout_and_after_every_job(self):
+        with open(os.path.join(ROOT, "playbooks", "base", "pre.yaml")) as handle:
+            pre = handle.read()
+        self.assertLess(pre.index("ansible.builtin.assert"), pre.index("import_playbook: staging-reset.yaml"))
+        self.assertLess(pre.index("import_playbook: staging-reset.yaml"), pre.index("prepare-workspace-git"))
+        with open(os.path.join(ROOT, "zuul.d", "jobs.yaml")) as handle:
+            jobs = handle.read()
+        self.assertIn("      - name: playbooks/base/cleanup.yaml\n        cleanup: true\n", jobs)
+        self.assertNotIn("cleanup-run", jobs, "deprecated in Zuul 14.3: a config warning")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -13,7 +13,12 @@
     pre-run: playbooks/base/pre.yaml
     # The last post-run of every job, since a child's post-run playbooks run before its parent's: whatever a job's own
     # post-run left in ~/zuul-output/logs is stored too.
-    post-run: playbooks/base/post-logs.yaml
+    post-run:
+      - playbooks/base/post-logs.yaml
+      # After every job, also one that failed or was aborted (`cleanup`: Zuul runs it then too; the job attribute for
+      # that is deprecated in Zuul 14.3): the staging node back to its image (AIDepartment#1655).
+      - name: playbooks/base/cleanup.yaml
+        cleanup: true
     roles:
       - zuul: zuul/zuul-jobs
     # AIDepartment's checks time out after 2 hours today (its docs/development.md); a job sets less if it needs less.
@@ -23,4 +28,4 @@
         # The build node (AIDepartment#1345): Bazelisk, git and the scripts' tools. The launcher's provider for the
         # label comes with AIDepartment#1345.
         - name: node
-          label: aid-node
+          label: aid-check-pod-node

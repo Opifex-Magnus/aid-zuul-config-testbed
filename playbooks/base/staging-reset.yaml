@@ -1,0 +1,24 @@
+# AIDepartment#1655: the staging node (AIDepartment's deploy/zuul/staging-node/, label aid-staging-node) is a VM on
+# ThunderBox that starts from the same image every time it is reset (ThunderBox's ci/staging-node.yml): a pull request's
+# code runs there as root, so no job may find what the job before it left. pre.yaml imports this before the checkout,
+# and cleanup.yaml resets it again after the job, so nothing a job started keeps running. The node is named here, not by
+# a variable, so that no job's variables can point the reset elsewhere. Every other node is left alone.
+
+- hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Start the staging node's VM afresh from its image
+      ansible.builtin.uri:
+        url: "http://staging-node.zuul-staging.svc.cluster.local:8080/reset"
+        method: POST
+        timeout: 60
+      when: groups['all'] | map('extract', hostvars) | map(attribute='ansible_host', default='') | select('equalto', 'staging-node.zuul-staging.svc.cluster.local') | list | length > 0
+
+- hosts: all
+  gather_facts: false
+  tasks:
+    - name: Wait for the staging node's new VM
+      ansible.builtin.wait_for_connection:
+        delay: 5
+        timeout: 300
+      when: ansible_host | default('') == 'staging-node.zuul-staging.svc.cluster.local'

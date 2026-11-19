@@ -1,0 +1,14 @@
+# The base job's last post-run (zuul.d/jobs.yaml), with `cleanup`, so Zuul runs it after every job, also one that
+# failed or was aborted:
+# the staging node's VM back to its image (staging-reset.yaml), so that nothing a pull request started on it keeps
+# running until the next job. Every other node is left alone.
+
+- hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Start the staging node's VM afresh from its image
+      ansible.builtin.uri:
+        url: "http://staging-node.zuul-staging.svc.cluster.local:8080/reset"
+        method: POST
+        timeout: 60
+      when: groups['all'] | map('extract', hostvars) | map(attribute='ansible_host', default='') | select('equalto', 'staging-node.zuul-staging.svc.cluster.local') | list | length > 0

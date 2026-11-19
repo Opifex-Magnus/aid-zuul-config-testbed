@@ -8,16 +8,16 @@ the jobs with secrets and their secrets (AIDepartment#1351). AIDepartment's own 
 | --- | --- |
 | [`zuul.d/pipelines.yaml`](zuul.d/pipelines.yaml) | `check`, `check-external` and `gate`, reported as check runs of the App `aid-zuul`, and `hold`, which takes a pull request out of `gate` and reports nothing. AIDepartment's `ci/zuul/gate.md` says how `gate` and `hold` do what Mergify does. `post` after a merge, and `periodic-0200` and `periodic-0300` at 02:00 and 03:00 UTC, all post-review (AIDepartment's `ci/zuul/publish.md`) |
 | [`zuul.d/jobs.yaml`](zuul.d/jobs.yaml) | `base`, every job's parent: one build node, a 2-hour timeout, the checkout, and the build's logs kept (AIDepartment deploy/zuul/web.md) |
-| [`playbooks/base/`](playbooks/base) | the base job's playbooks |
+| [`playbooks/base/`](playbooks/base) | the base job's playbooks, the staging node's reset among them |
 | [`zuul.d/project.yaml`](zuul.d/project.yaml) | this repository's own `check`, which validates a pull request here and runs nothing |
 | [`zuul.d/release.yaml`](zuul.d/release.yaml) | `aid-release-credentials`, the release's credential check, and where it runs: `post` for AIDepartment |
 | `zuul.d/secrets.yaml` | the secrets, each encrypted for this project's key by AIDepartment's `deploy/zuul/encrypt-secret.sh` |
 | [`playbooks/secrets/guard.yaml`](playbooks/secrets/guard.yaml) | the pre-run of every job with a secret |
 | [`playbooks/release/`](playbooks/release) | the release's credential check: a token of the App `aid-release`, made, checked and revoked |
-| [`zuul.d/publish.yaml`](zuul.d/publish.yaml) | what publishes from AIDepartment's `main` (AIDepartment#1350): `aid-publish-apps` and `aid-release` for `post`, on the post node, and `aid-nightly-report` for the periodic pipelines. They run for AIDepartment from step 4 of AIDepartment's `ci/zuul/publish.md`, "Turning it on", and publish nothing while its `ci/publisher` names Actions |
+| [`zuul.d/publish.yaml`](zuul.d/publish.yaml) | what publishes from AIDepartment's `main` (AIDepartment#1350): `aid-publish-apps`, `aid-release` and `aid-publish-images` for `post`, on the post node, and `aid-nightly-report` for the periodic pipelines. They run for AIDepartment from step 4 of AIDepartment's `ci/zuul/publish.md`, "Turning it on", and publish nothing while its `ci/publisher` names Actions |
 | [`playbooks/publish/`](playbooks/publish) | their stages: AIDepartment's script for the job, one stage per playbook, each with only the credentials it uses (`stage.yaml`) |
 | [`playbooks/nightly/`](playbooks/nightly) | the nightly's result, to AIDepartment's `ci-nightly` issue |
-| [`tests/`](tests) | the tests of the release's credential check and of the guard ([Tests](#tests)) |
+| [`tests/`](tests) | the tests of the release's credential check, of the guard and of the staging node's reset ([Tests](#tests)) |
 
 ## Trusted
 
@@ -33,7 +33,9 @@ define no pipeline and no base job, and Zuul refuses either with a configuration
 ## Changing it
 
 - **Never merge here yourself, and never push to `main`.** `main` is protected: a change is a pull request, reviewed
-  by the other bot, and merged by the orchestrator. Nothing merges into it automatically, Zuul included.
+  by the other bot, and merged by the orchestrator. Nothing merges into it automatically, Zuul included: an approved
+  pull request here enters `gate`, which has no jobs for it, so `aid/gate` goes from queued to skipped and nothing
+  merges (AIDepartment#1660).
 - **Test it first on AIDepartment's test bed** (its `ci/zuul/README.md`, "The test bed"): it runs Zuul with a copy of
   this repository's branch as the config project and AIDepartment's jobs as the untrusted project, and checks that the
   layout loads and that AIDepartment's pull requests still run speculatively. Link the run in the pull request.
@@ -44,25 +46,40 @@ define no pipeline and no base job, and Zuul refuses either with a configuration
 
 ## The build node
 
-`zuul.d/providers.yaml` registers one PR-only k3s pod as `aid-node` (AIDepartment#1345). A second provider, `aid-k3s-post`, registers the post node as `aid-post-node` (AIDepartment#1350): only `zuul.d/publish.yaml`'s jobs name it. The labels `aid-gate-node` and `aid-staging-node` are the gate's image and staging nodes' (AIDepartment#1521), named by AIDepartment's own nodesets. A third provider, `aid-k3s-gate`, registers the gate's image node as `aid-gate-node`; the staging node has no provider until it exists. Its deployment, checked image,
-network policies and quota are AIDepartment's `deploy/zuul/node/`. Zuul's static provider assigns one job at a time;
-`base` bounds a job at 7200 seconds. The shared connection `aid-nodes` is `driver=static` in the deployed `zuul.conf`.
+`zuul.d/providers.yaml` allocates disposable Kubernetes pods for `aid-check-pod-node`, `aid-gate-pod-node` and `aid-post-pod-node`
+(AIDepartment#1698). Each provider has one pod slot, `reuse: false` and a separate connection/namespace:
+`aid-check-pods` / `zuul-nodes`, `aid-gate-pods` / `zuul-gate`, and `aid-post-pods` / `zuul-post`. Provider and label names are distinct from the retired static nodes (AIDepartment#1754). Post-review publishing stays on the post identity and never uses the PR node's farm credential.
 
-The Kubernetes driver in Zuul 14.3.0 creates namespaces and RBAC for each pod, which needs cluster-wide powers the
-tenant does not have, and has no hook to create the namespace's quota and network policy before starting the pod.
-For now the admin creates a bounded namespace and Kubernetes keeps its one pod alive. Jobs share its PR trust level
-and scratch. Its projected ServiceAccount token gives only `dev` at the farm; no job on this node can write the
-trusted cache. Main's post jobs need a separate node and a post-only secret (#1351), never a credential on `aid-node`.
+AIDepartment's pinned launcher adds fixed-namespace support to Zuul 14.3's Kubernetes driver. The admin-owned
+`PodTemplate/job-node` supplies the checked image, resource budget, security, mounts and service account. The
+provider's `spec: {}` satisfies the upstream label schema; the launcher never uses it as a job-controlled pod spec.
+The launcher can create/delete pods and read the template in the three bounded namespaces, but cannot create
+namespaces, modify policy/RBAC/templates, or read Secrets. The namespace quotas admit one pod each; jobs queue in
+Zuul. Pods and their homes/processes are deleted after every job. Shared caches are read-only to jobs.
+
+The Docker staging VM stays on `aid-nodes`' static provider as `aid-staging-node`: the base job resets its snapshot
+before and after each job (AIDepartment#1655). It does not share Kubernetes nodes or identities.
+
+Coordinate deployment with AIDepartment's `ci/zuul/disposable-nodes.md`; only clean, merged main commits may be
+applied to live infrastructure. Do not activate these providers until the launcher, fixed connections, templates
+and RBAC are deployed. Before a driver switch, pause admissions, drain jobs and retire retained static
+requests/nodes under Zuul coordination locks, using the static lifecycle after confirming no owner and no static pod.
+Scaling a controller to zero is insufficient. Never alias the retired labels or send a StaticProviderNode through
+Kubernetes cleanup. AID's runbook records the exact #1754 incident IDs, ownership checks and original-range retry.
+Keep config #31 and AID #1756 held for the orchestrator: merge config first, then admit AID's updated gate nodeset;
+old AID gate-image jobs must remain drained between merges. Capture green check/gate and post publication plus
+fresh pod UID/deletion evidence on #1754/#1698.
 
 `check-external` is blocked by the base job's trusted pre-run until a separate credential-free execution boundary
 exists. It fails before checkout and before any untrusted pre/run/post/cleanup playbook, and tells Zuul not to retry.
 The shared pod's raw projected token is readable by its job user; a conditional credential helper cannot secure that
-pipeline. Do not remove the guard while external jobs could use `aid-node`. The standard Compose test bed seeds a
+pipeline. Do not remove the guard while external jobs could use `aid-check-pod-node`. The standard Compose test bed seeds a
 fake readable farm token and proves that all four malicious hooks run in `check` and none run in `check-external`.
 
-The node's SSH host key is pinned in the provider. On rotation, generate the new SSH Secrets in AIDepartment, update
-`host-key` here in the same rollout, and restart the pod and executor. Only the public key belongs here. The private
-keys stay in AID's keychain and Kubernetes Secrets.
+The executor's existing SSH key remains in its Secret; node templates mount each namespace's authorized key
+and SSH host key. Only staging keeps its static provider host-key pin. The coordinated launcher overrides the Kubernetes label's kubectl default to enable SSH host-key checking.
+Its real nodescan must connect and populate the executor's known_hosts before the job starts; inventory never
+sets `StrictHostKeyChecking=false` for these nodes. Private keys remain in AID's keychain/Kubernetes Secrets.
 
 ## AID events (#1349)
 
@@ -80,28 +97,13 @@ makes `main` require it (pending: ThunderBox's step 11a).
 
 ## Jobs with secrets
 
-`aid-close-merged-issues` (`zuul.d/issues.yaml`, AIDepartment#1656) is a trusted, nodeless `post-issues` job. After a
-default-branch push, it closes GitHub's closing-issue links for PRs whose rebase merge by `aid-zuul[bot]` landed in
-that push. Its token is scoped to AIDepartment with Contents read, Pull requests read and Issues write; it uses
-`aid-release`'s existing encrypted key. **Activation is pending**: the owner must add and accept Pull requests read
-for that App before merging this job. The token helper checks the accepted permissions. The key and token remain
-on the executor; the token is revoked on success or failure. External issue links are reported and skipped.
-The helper waits up to a minute for GitHub's delayed commit-to-PR index, handles pagination and leaves already
-closed issues alone. Recovery can replay `playbooks/issues/close.py` with the push's old/new revisions and a newly
-scoped token. AIDepartment's `ci/zuul/gate.md`, "Closing linked issues", records the original failure and live proof.
-
-`post-issues` is post-review with an independent manager, so every main push is retained even while an earlier
-buildset is active. It must stay separate from `post`, whose supercedent manager discards intermediate queued
-pushes: closing only a surviving push's old/new revision range would miss the dropped merge's issues. The job's
-guard allowlist contains only `post-issues`; it refuses `post`, PR changes, and other projects.
-
 AIDepartment's `deploy/zuul/job-secrets.md` has the model: each secret's plaintext is in AID's keychain, and jobs get
 it only as a secret here, encrypted for this project's key. A secret is defined only here, never in AIDepartment, and a
 job that names one:
 
 - is defined here, in a file of `zuul.d/` with only such jobs and where they run (the test bed leaves those files out);
 - is `final: true` and `post-review: true`, with `allowed-projects`;
-- runs with `nodeset: {nodes: []}`, or on a node of its own, never `aid-node`: the publishing jobs run on `aid-post-node`
+- runs with `nodeset: {nodes: []}`, or on a node of its own, never `aid-check-pod-node`: the publishing jobs run on `aid-post-pod-node`
   (AIDepartment's `deploy/zuul/post-node/`), which only they name;
 - starts with `pre-run: playbooks/secrets/guard.yaml`, and sets `secret_pipelines` and `secret_projects` in its `vars`.
 
@@ -111,14 +113,6 @@ as it loads the proposed configuration, so a stanza for another key is reported 
 run uses it.
 
 ## Tests
-
-The focused issue-closure suite is `python -I -B -m unittest discover -s tests -p 'test_issue_closing*.py' -v`.
-It includes the real Ansible guard with the closer job's checked-in allowlist. `tests/check_issue_queue.py` runs in
-the pinned scheduler image, with its complete runtime dependencies: `python3 -I -B tests/check_issue_queue.py`.
-The testbed's `issue_closing_only` workflow runs it before the live GitHub probe. It uses the installed managers'
-queue allocation and supercedent pruning with stand-ins for storage and base enqueue persistence, then calls the
-production closer for the surviving pushes. An active A with B and C queued drops B under the original `post`
-manager; the configured `post-issues` manager retains both merges and completes both linked issues.
 
 [`tests/`](tests) holds the tests of the trusted code that handles a secret. They run under real Ansible, as Zuul
 14.3.0 runs it (ansible-core 2.18), with Zuul's own Ansible plugins set up as its executor sets them up: its `command`
@@ -143,7 +137,9 @@ is why the tests run Zuul's plugins.
   `TMP`, removed afterwards; and that the key, a JWT or the token reaches neither Ansible's output, nor the build's log,
   nor the console log. It also runs `playbooks/secrets/guard.yaml`: a merged ref in its pipeline and for its project
   passes, and a change, another pipeline or another project fails without a retry. And it checks that its Ansible is
-  Zuul's: a `no_log` command task registers no output. `zuul_return` is a stand-in (`tests/plugins/action/`) that
+  Zuul's: a `no_log` command task registers no output. And it runs `playbooks/base/staging-reset.yaml` and `cleanup.yaml`
+  against a stand-in for the staging node's reset: a job with the staging node posts one reset and waits for the node, a
+  job without it posts none, and the base job resets after the guard, before the checkout, and in its last post-run, marked `cleanup`. `zuul_return` is a stand-in (`tests/plugins/action/`) that
   records what a playbook returns.
 
 - `test_publish.py` runs each stage of `playbooks/publish/` the same way, with a stand-in for AIDepartment's stage
@@ -164,3 +160,20 @@ python3.12 -m venv /tmp/cfg-tests && /tmp/cfg-tests/bin/pip install -r tests/req
 /tmp/cfg-tests/bin/pip install --no-deps -r tests/zuul-requirements.txt
 PATH=/tmp/cfg-tests/bin:$PATH python -I -m unittest discover -s tests -v
 ```
+
+For the disposable providers, run the schema and real SSH verification regression together, using the coordinated
+AID checkout and a Python environment with the full `zuul==14.3.0` runtime:
+
+```sh
+python tests/check_providers.py --launcher /path/to/AIDepartment/deploy/zuul/server/launcher
+```
+
+This constructs actual provider labels from this YAML, negotiates SSH against a local fixture, and checks the real
+launcher and executor inventory paths. No cluster or publishing credentials are used. Deploy this launcher fix
+before activating the new provider connections; a schema-only pass cannot establish server authentication.
+
+The same checker runs `provider_identity.py`: retained real `StaticProviderNode` records cannot satisfy the
+new requests in Zuul's actual launcher filter or resolve to the Kubernetes provider by canonical name. It
+isolates the provider and label barriers, verifies fresh pod allocations still match, and exercises drained
+static cleanup with the upstream static driver. It also checks base/post/gate nodesets and the Compose fixture
+against the coordinated AID checkout. An old provider name or label makes the regression fail.

@@ -14,6 +14,9 @@
         that: zuul.pipeline != 'check-external'
         fail_msg: "check-external is blocked until a credential-free node is available (AIDepartment#1345)"
 
+# The staging node starts from its image (AIDepartment#1655), before anything is put on it.
+- import_playbook: staging-reset.yaml
+
 # Both roles are Zuul's own (zuul/zuul-jobs), reached only after the pipeline guard.
 - hosts: all
   roles:
