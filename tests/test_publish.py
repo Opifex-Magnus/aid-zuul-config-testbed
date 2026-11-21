@@ -14,6 +14,7 @@ import sys
 import tempfile
 import threading
 import unittest
+import yaml
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(__file__))
@@ -297,6 +298,18 @@ class NightlyReportTest(unittest.TestCase):
         with Stand([nightly(None)], []) as stand:
             self.assertIsNone(module.nightly_result(stand.url, "aid", "s" * 32, 6600, sleep=sleep, clock=lambda: clock["now"]))
             self.assertLessEqual(clock["now"], 6600)
+
+    def test_admission_graph_and_priority(self):
+        with open(os.path.join(ROOT, "zuul.d", "pipelines.yaml")) as handle:
+            pipelines = {x["pipeline"]["name"]: x["pipeline"] for x in yaml.safe_load(handle)}
+        rank = {"high": 0, "normal": 1, "low": 2}
+        with open(os.path.join(ROOT, "zuul.d", "nightly.yaml")) as handle:
+            clock, project = yaml.safe_load(handle)
+        self.assertEqual(clock["job"]["nodeset"], {"nodes": []})
+        for pipeline in load_report().PIPELINES:
+            self.assertLess(rank[pipelines[pipeline]["precedence"]], rank[pipelines["gate"]["precedence"]])
+            self.assertEqual(project["project"][pipeline]["jobs"],
+                ["aid-nightly-clock", {"aid-nightly": {"dependencies": ["aid-nightly-clock"]}}])
 
     def test_start_window_reports_missing_and_late_starts(self):
         module = load_report()

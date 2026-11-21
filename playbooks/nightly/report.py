@@ -9,7 +9,7 @@ credential, made just before it (playbooks/nightly/report.yaml), since an App's 
         whether this nightly is reported here: its pipeline's time is 04:00 in Madrid, as aid-nightly's own script
         lets through (one pipeline per time, so a run that waited past the other time keeps its decision), and
         AIDepartment's ci/publisher names Zuul. Prints {"report": true|false, ...}.
-    python3 report.py wait --zuul URL --tenant T --buildset UUID [--wait SECONDS]
+    python3 report.py wait --zuul URL --tenant T --buildset UUID --pipeline P [--wait SECONDS]
         aid-nightly's result in this buildset, from Zuul's buildset API. Prints {"result": "SUCCESS"|...|null}.
     python3 report.py report --result R --build-url URL --token-file F
         the result to the issue. An empty R is a nightly that had no result in time.
@@ -147,7 +147,7 @@ def report(result, link, token, api=API, today=None):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("step", choices=["decide", "wait", "report"])
-    parser.add_argument("--pipeline", help="decide: the pipeline this runs in")
+    parser.add_argument("--pipeline", help="decide/wait: the pipeline this runs in")
     parser.add_argument("--publisher-file", help="decide: AIDepartment's ci/publisher, in the job's checkout")
     parser.add_argument("--zuul", help="wait: zuul-web's address, from the executor")
     parser.add_argument("--tenant", help="wait")

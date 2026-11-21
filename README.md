@@ -44,6 +44,22 @@ define no pipeline and no base job, and Zuul refuses either with a configuration
 - Zuul's `check` on the pull request reports a configuration error, if any, before the merge.
 - After the merge, `curl <zuul-web>/api/tenant/aid/config-errors` is empty if it loaded.
 
+## Nightly admission (AIDepartment#2051)
+
+The periodic pipelines use high precedence and gate uses normal: once a running compute
+job releases its slot, the nightly queues ahead of new gates. Gate capacity stays
+unchanged during the day. `zuul.d/nightly.yaml` adds a node-free clock dependency;
+its `zuul.child_jobs` skips the off-hour compute job before allocation. The reporter
+stays independent, uses the same clock helper, and reports `START_TIMEOUT` if
+the SQL build start is absent or later than one hour after the scheduled slot.
+A timely start may still wait the existing 110 minutes for its result. No credential
+is acquired until after that wait.
+
+After independent review, the orchestrator merges this config and checks the loaded
+layout for both timers: off-hour compute SKIPPED with no node request, matching-hour
+compute admitted ahead of queued gates, and a missed start reported to `ci-nightly`.
+No provider, quota or live cluster change is part of this patch.
+
 ## The build node
 
 `zuul.d/providers.yaml` allocates disposable Kubernetes pods for `aid-check-pod-node`, `aid-gate-pod-node` and `aid-post-pod-node`
