@@ -1,0 +1,21 @@
+# Admission before node allocation (AIDepartment#2051). Keep separate from publish.yaml:
+# this job has no secret, and must also load in the credential-free Compose test bed.
+- job:
+    name: aid-nightly-clock
+    parent: base
+    nodeset: {nodes: []}
+    timeout: 300
+    run: playbooks/nightly/clock.yaml
+
+- project:
+    name: kristofk/AIDepartment
+    periodic-0200:
+      jobs:
+        - aid-nightly-clock
+        - aid-nightly:
+            dependencies: [aid-nightly-clock]
+    periodic-0300:
+      jobs:
+        - aid-nightly-clock
+        - aid-nightly:
+            dependencies: [aid-nightly-clock]

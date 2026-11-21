@@ -32,6 +32,8 @@ LABEL = "ci-nightly"
 TITLE = "Nightly CI failed"
 JOB = "aid-nightly"
 # The periodic pipelines (zuul.d/pipelines.yaml), each at one hour, UTC: Zuul's timer has no time zone.
+START_WAIT = 60 * 60
+START_TIMEOUT = "START_TIMEOUT"
 PIPELINES = {"periodic-0200": 2, "periodic-0300": 3}
 
 
@@ -84,7 +86,7 @@ def call(method, url, token=None, body=None, ok=(200, 201)):
     return json.loads(text) if text else None
 
 
-def nightly_result(zuul, tenant, buildset, deadline, interval=60, sleep=time.sleep, clock=time.time):
+def nightly_result(zuul, tenant, buildset, deadline, interval=60, sleep=time.sleep, clock=time.time, start_deadline=None):
     """aid-nightly's result in the buildset (Zuul's GET /api/tenant/<tenant>/buildset/<uuid>, whose builds each have
     job_name and result); None when it has none by the deadline. A buildset Zuul has not stored yet is waited for."""
     url = f"{zuul.rstrip('/')}/api/tenant/{urllib.parse.quote(tenant)}/buildset/{urllib.parse.quote(buildset)}"
@@ -95,12 +97,24 @@ def nightly_result(zuul, tenant, buildset, deadline, interval=60, sleep=time.sle
             if not str(error).endswith(": 404"):
                 raise
             found = {}
-        done = [build for build in found.get("builds", []) if build.get("job_name") == JOB and build.get("result")]
+        builds = [build for build in found.get("builds", []) if build.get("job_name") == JOB]
+        # SQL records start_time when dispatch begins, before a result exists.
+        # Check the start timestamp too: a late SUCCESS must not hide a missed window.
+        starts = [datetime.datetime.fromisoformat(build["start_time"].replace("Z", "+00:00"))
+                  .replace(tzinfo=datetime.timezone.utc).timestamp()
+                  for build in builds if build.get("start_time")]
+        if start_deadline is not None:
+            if starts and min(starts) > start_deadline:
+                return START_TIMEOUT
+            if not starts and clock() >= start_deadline:
+                return START_TIMEOUT
+        done = [build for build in builds if build.get("result")]
         if done:
             return done[-1]["result"]
         if clock() + interval > deadline:
             return None
-        sleep(interval)
+        remaining = min(deadline, start_deadline if start_deadline is not None and not starts else deadline) - clock()
+        sleep(max(0, min(interval, remaining)))
 
 
 def report(result, link, token, api=API, today=None):
@@ -117,8 +131,9 @@ def report(result, link, token, api=API, today=None):
     body = "\n".join([
         f"The nightly full run on Zuul of {date} (UTC) {f'ended with `{result}`' if result else 'has no result after the job allowed for it'}: {link}",
         "",
-        "Its log says which target failed. The nightly on Zuul is Bazel's build and test of everything; the rest of CI "
-        "runs on GitHub Actions until Zuul has it (AIDepartment's ci/zuul/publish.md, \"The nightly\").",
+        ("The nightly did not start within one hour of its scheduled slot. Inspect the compute node queue."
+         if result == START_TIMEOUT else "Its log says which target failed. The nightly on Zuul is Bazel's build and test of everything; the rest of CI "
+        "runs on GitHub Actions until Zuul has it (AIDepartment's ci/zuul/publish.md, \"The nightly\")."),
         "",
         "This issue closes when a nightly run passes (aid-zuul-config's aid-nightly-report).",
     ])
@@ -155,7 +170,10 @@ def main(argv=None):
             return {"report": False, "why": f"ci/publisher names {publisher!r}: {publisher} reports the nightly"}
         return {"report": True, "why": f"{args.pipeline}'s timer of {instant:%Y-%m-%dT%H:%MZ} is 04:00 in Madrid"}
     if args.step == "wait":
-        return {"result": nightly_result(args.zuul, args.tenant, args.buildset, time.time() + args.wait)}
+        now = datetime.datetime.fromisoformat(args.now) if args.now else datetime.datetime.now(datetime.timezone.utc)
+        start_deadline = fired(args.pipeline, now).timestamp() + START_WAIT
+        return {"result": nightly_result(args.zuul, args.tenant, args.buildset, time.time() + args.wait,
+                                         start_deadline=start_deadline)}
     with open(args.token_file) as handle:
         token = handle.read().strip()
     action, issues = report(args.result or None, args.build_url, token, api=args.api.rstrip("/"))

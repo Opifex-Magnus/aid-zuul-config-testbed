@@ -217,7 +217,7 @@ class Stand(ThreadingHTTPServer):
 
 
 def nightly(result, job="aid-nightly"):
-    return [{"job_name": "aid-nightly-report", "result": None}, {"job_name": job, "result": result}]
+    return [{"job_name": "aid-nightly-report", "result": None}, {"job_name": job, "result": result, "start_time": "2026-07-10T02:00:01"}]
 
 
 def load_report():
@@ -298,6 +298,27 @@ class NightlyReportTest(unittest.TestCase):
             self.assertIsNone(module.nightly_result(stand.url, "aid", "s" * 32, 6600, sleep=sleep, clock=lambda: clock["now"]))
             self.assertLessEqual(clock["now"], 6600)
 
+    def test_start_window_reports_missing_and_late_starts(self):
+        module = load_report()
+        slot = datetime.datetime(2026, 7, 10, 2, tzinfo=datetime.timezone.utc).timestamp()
+        for builds in (None, [], [{"job_name": "aid-nightly", "result": None}],
+                       [{"job_name": "aid-nightly", "start_time": "2026-07-10T03:00:01", "result": "SUCCESS"}]):
+            with self.subTest(builds=builds), Stand([builds], []) as stand:
+                now = [slot]
+                def sleep(seconds):
+                    now[0] += seconds
+                result = module.nightly_result(stand.url, "aid", "s" * 32, slot + 6600,
+                    start_deadline=slot + module.START_WAIT, clock=lambda: now[0], sleep=sleep)
+                self.assertEqual(result, module.START_TIMEOUT)
+                self.assertLessEqual(now[0], slot + module.START_WAIT)
+        # A build starting in time can take longer than an hour to finish.
+        with Stand([nightly(None)] * 70 + [nightly("SUCCESS")], []) as stand:
+            now = [slot]
+            def sleep(seconds):
+                now[0] += seconds
+            self.assertEqual(module.nightly_result(stand.url, "aid", "s" * 32, slot + 6600,
+                start_deadline=slot + module.START_WAIT, clock=lambda: now[0], sleep=sleep), "SUCCESS")
+
     def test_a_pass_closes_the_open_issues(self):
         with Stand([None], [{"number": 5}, {"number": 3, "pull_request": {}}]) as stand:
             status, done = self.report(stand, "SUCCESS")
@@ -334,6 +355,23 @@ class NightlyPlaybookTest(unittest.TestCase):
         with open(os.path.join(self.src, "ci", "publisher"), "w") as handle:
             handle.write("zuul\n")
 
+    def test_clock_selects_children_without_a_node_or_token(self):
+        # The same decide helper has DST/winter/summer/late-start coverage above.
+        for pipeline, admitted in (("periodic-0200", True), ("periodic-0300", False)):
+            real = os.path.join(self.work, "playbooks", "nightly", "report-real.py")
+            if not os.path.exists(real):
+                os.rename(os.path.join(self.work, "playbooks", "nightly", "report.py"), real)
+                with open(os.path.join(self.work, "playbooks", "nightly", "report.py"), "w") as shim:
+                    shim.write("import runpy, sys\n"
+                               "sys.argv[1:] += ['--now', '2026-07-10T03:10:00+00:00']\n"
+                               f"runpy.run_path({real!r}, run_name='__main__')\n")
+            status, output, returned = ansible(os.path.join(self.work, "playbooks", "nightly", "clock.yaml"), {
+                "zuul": {"pipeline": pipeline, "executor": {"work_root": self.work},
+                         "project": {"src_dir": "src"}}}, self.work)
+            self.assertEqual(status, 0, output)
+            self.assertEqual(returned[-1]["zuul"]["child_jobs"], ["aid-nightly"] if admitted else [])
+            shutil.rmtree(os.path.join(self.work, "zuul-ansible"))
+
     def test_the_token_is_made_after_the_wait_and_revoked(self):
         events = []
         with stub_github.StubGitHub(KEY.public_key(), granted={"issues": "write"}) as stub, \
@@ -351,7 +389,7 @@ class NightlyPlaybookTest(unittest.TestCase):
             with open(os.path.join(self.work, "playbooks", "nightly", "report.py"), "w") as shim:
                 shim.write("import runpy, sys\n"
                            f"open({log!r}, 'a').write('report ' + sys.argv[1] + '\\n')\n"
-                           "extra = {'decide': ['--now', '2026-07-10T02:00:30+00:00'], 'report': ['--api', %r]}.get(sys.argv[1], [])\n" % stand.url +
+                           "extra = {'decide': ['--now', '2026-07-10T02:00:30+00:00'], 'wait': ['--now', '2026-07-10T02:00:30+00:00'], 'report': ['--api', %r]}.get(sys.argv[1], [])\n" % stand.url +
                            "sys.argv[1:] += extra\n"
                            f"sys.argv[0] = {real!r}\n"
                            f"runpy.run_path({real!r}, run_name='__main__')\n")

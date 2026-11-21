@@ -23,7 +23,7 @@
       block:
         - name: aid-nightly's result in this buildset
           ansible.builtin.command:
-            argv: "{{ nightly_report + ['wait', '--zuul', nightly_zuul_api, '--tenant', zuul.tenant, '--buildset', zuul.buildset] }}"
+            argv: "{{ nightly_report + ['wait', '--pipeline', zuul.pipeline, '--zuul', nightly_zuul_api, '--tenant', zuul.tenant, '--buildset', zuul.buildset] }}"
           register: nightly_waited
           changed_when: false
         - name: A directory of its own for the App's key and token

@@ -1,0 +1,21 @@
+# No node and no credential: an off-hour item never allocates a compute pod.
+- hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Whether this timer admits the nightly
+      ansible.builtin.command:
+        argv:
+          - "{{ ansible_playbook_python }}"
+          - "{{ playbook_dir }}/report.py"
+          - decide
+          - --pipeline
+          - "{{ zuul.pipeline }}"
+          - --publisher-file
+          - "{{ zuul.executor.work_root }}/{{ zuul.project.src_dir }}/ci/publisher"
+      register: nightly_decided
+      changed_when: false
+    - name: Admit only the matching timer's compute job
+      zuul_return:
+        data:
+          zuul:
+            child_jobs: "{{ ['aid-nightly'] if (nightly_decided.stdout | from_json).report else [] }}"
